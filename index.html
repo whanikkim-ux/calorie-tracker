@@ -213,16 +213,6 @@
 <!-- SETTINGS -->
 <div class="page" id="page-settings">
   <div class="goal-set-card">
-    <div class="goal-set-title">🔑 API 키 설정</div>
-    <div class="input-row">
-      <div class="input-label">Anthropic API 키 (platform.anthropic.com에서 발급)</div>
-      <input class="input-field" type="password" id="apiKeyInput" placeholder="sk-ant-api03-...">
-    </div>
-    <button class="btn-save" onclick="saveApiKey()">API 키 저장</button>
-    <div id="apiKeyStatus" style="font-size:12px;margin-top:8px;color:var(--muted)"></div>
-  </div>
-
-  <div class="goal-set-card">
     <div class="goal-set-title">목표 칼로리 설정</div>
     <div class="input-row">
       <div class="input-label">하루 목표 칼로리 (kcal)</div>
@@ -235,6 +225,17 @@
     <button class="btn-save" onclick="saveSettings()">저장하기</button>
   </div>
   <div class="goal-set-card">
+    <div class="goal-set-title">API 키</div>
+    <div class="input-row">
+      <div class="input-label">Anthropic API 키 (이 기기에만 저장됨)</div>
+      <input class="input-field" type="password" id="apiKeyInput" placeholder="sk-ant-api03-..." autocomplete="off">
+    </div>
+    <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:14px">
+      console.anthropic.com 에서 발급한 본인 키를 붙여넣으세요. 키는 이 브라우저에만 보관되고 외부로 전송되지 않습니다.
+    </div>
+    <button class="btn-save" onclick="saveApiKey()">키 저장</button>
+  </div>
+  <div class="goal-set-card">
     <div class="goal-set-title">오늘 식단 초기화</div>
     <button class="btn-save" style="background:var(--danger);color:#fff" onclick="clearToday()">오늘 기록 삭제</button>
   </div>
@@ -243,29 +244,11 @@
 <div class="toast" id="toast"></div>
 
 <script>
-// ← 여기에 본인 API 키 입력
 let pendingFood = null;
 let scanInterval = null;
 let isAnalyzing = false;
 let scanActive = false;
 let stream = null;
-
-// ─── API KEY ──────────────────────────────────────────
-function getApiKey() {
-  return localStorage.getItem('kcal_api_key') || '';
-}
-
-function saveApiKey() {
-  const key = document.getElementById('apiKeyInput').value.trim();
-  if (!key.startsWith('sk-ant-')) {
-    document.getElementById('apiKeyStatus').textContent = '❌ 올바른 API 키가 아니에요';
-    document.getElementById('apiKeyStatus').style.color = 'var(--danger)';
-    return;
-  }
-  localStorage.setItem('kcal_api_key', key);
-  document.getElementById('apiKeyStatus').textContent = '✅ 저장됐어요!';
-  document.getElementById('apiKeyStatus').style.color = 'var(--success)';
-}
 
 // ─── STORAGE ──────────────────────────────────────────
 const todayKey = () => 'kcal_' + new Date().toISOString().split('T')[0];
@@ -274,17 +257,14 @@ const saveSettingsData = d => localStorage.setItem('kcal_settings', JSON.stringi
 const getTodayLog = () => JSON.parse(localStorage.getItem(todayKey()) || '[]');
 const saveTodayLog = l => localStorage.setItem(todayKey(), JSON.stringify(l));
 const getDateLog = ds => JSON.parse(localStorage.getItem('kcal_' + ds) || '[]');
+const getApiKey = () => localStorage.getItem('kcal_apikey') || '';
 
 // ─── INIT ─────────────────────────────────────────────
 function init() {
-  const savedKey = getApiKey();
-  if (savedKey) {
-    document.getElementById('apiKeyStatus').textContent = '✅ API 키 저장됨';
-    document.getElementById('apiKeyStatus').style.color = 'var(--success)';
-  }
   const s = getSettings();
   document.getElementById('goalInput').value = s.goal;
   document.getElementById('nameInput').value = s.name || '';
+  document.getElementById('apiKeyInput').value = getApiKey();
   document.getElementById('goalDisplay').textContent = s.goal;
   document.getElementById('todayDate').textContent =
     new Date().toLocaleDateString('ko-KR', {month:'long', day:'numeric', weekday:'short'});
@@ -367,10 +347,6 @@ function startScanLoop() {
 async function captureAndAnalyze() {
   const video = document.getElementById('liveVideo');
   if (!video.videoWidth) return;
-  if (!getApiKey()) {
-    setStatus('paused','설정 탭에서 API 키를 먼저 입력해주세요');
-    return;
-  }
   isAnalyzing = true;
   setStatus('analyzing','분석 중...');
 
@@ -379,11 +355,23 @@ async function captureAndAnalyze() {
   canvas.getContext('2d').drawImage(video,0,0);
   const base64 = canvas.toDataURL('image/jpeg',0.8).split(',')[1];
 
+  const apiKey = getApiKey();
+  if (!apiKey) {
+    setStatus('paused','설정 탭에서 API 키를 먼저 입력하세요');
+    isAnalyzing = false; scanActive = false; clearInterval(scanInterval);
+    return;
+  }
+
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages",{
-      method:"POST", headers:{"Content-Type":"application/json","x-api-key":getApiKey(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      method:"POST", headers:{
+        "Content-Type":"application/json",
+        "x-api-key":apiKey,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true"
+      },
       body: JSON.stringify({
-        model:"claude-sonnet-4-20250514", max_tokens:300,
+        model:"claude-sonnet-4-6", max_tokens:300,
         messages:[{role:"user",content:[
           {type:"image",source:{type:"base64",media_type:"image/jpeg",data:base64}},
           {type:"text",text:`음식 사진. JSON만 출력(마크다운 없이):
@@ -393,10 +381,8 @@ async function captureAndAnalyze() {
       })
     });
     const data = await res.json();
-    if (data.error) { setStatus('scanning','API 오류: '+data.error.message); isAnalyzing=false; return; }
     const text = data.content.map(c=>c.text||'').join('').replace(/```json|```/g,'').trim();
-    let food;
-    try { food = JSON.parse(text); } catch(pe) { setStatus('scanning','인식 재시도 중...'); isAnalyzing=false; return; }
+    const food = JSON.parse(text);
 
     if (food.found && food.cal > 0) {
       pendingFood = {...food, time:new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})};
@@ -410,8 +396,7 @@ async function captureAndAnalyze() {
       setStatus('scanning','음식을 화면에 비춰주세요');
     }
   } catch(e) {
-    setStatus('scanning','연결 오류 — 재시도 중...');
-    console.error('Scan error:', e);
+    setStatus('scanning','음식을 화면에 비춰주세요');
   }
   isAnalyzing = false;
 }
@@ -447,11 +432,21 @@ function handleFile(e) {
   reader.onload=async ev=>{
     const base64=ev.target.result.split(',')[1];
     const fr=document.getElementById('fallbackResult');
+    const apiKey=getApiKey();
+    if(!apiKey){
+      fr.innerHTML='<div style="color:var(--danger);font-size:13px;padding:8px 0">설정 탭에서 API 키를 먼저 입력하세요</div>';
+      return;
+    }
     fr.innerHTML='<div style="color:var(--muted);font-size:13px;padding:10px 0">분석 중...</div>';
     try {
       const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",headers:{"Content-Type":"application/json","x-api-key":getApiKey(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:300,
+        method:"POST",headers:{
+          "Content-Type":"application/json",
+          "x-api-key":apiKey,
+          "anthropic-version":"2023-06-01",
+          "anthropic-dangerous-direct-browser-access":"true"
+        },
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:300,
           messages:[{role:"user",content:[
             {type:"image",source:{type:"base64",media_type:"image/jpeg",data:base64}},
             {type:"text",text:`JSON만:{"found":true또는false,"name":"음식이름","cal":칼로리정수,"carb":탄수화물g,"protein":단백질g,"fat":지방g}`}
@@ -515,6 +510,11 @@ function saveSettings() {
   saveSettingsData({goal,name});
   document.getElementById('goalDisplay').textContent=goal;
   renderToday(); renderWeekly(); showToast('저장됐어요 ✓');
+}
+function saveApiKey() {
+  const key=document.getElementById('apiKeyInput').value.trim();
+  localStorage.setItem('kcal_apikey', key);
+  showToast(key ? 'API 키 저장됐어요 ✓' : '키가 비워졌어요');
 }
 function clearToday() {
   if(!confirm('오늘 기록을 모두 삭제할까요?')) return;
